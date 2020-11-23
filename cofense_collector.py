@@ -243,10 +243,18 @@ def main():
                     # ipv4 indicator
                     itype = "Address - ipv4-addr"
 
-                potential_indicators.append(_sip_indicator(type=itype, 
-                                                           value=value,
-                                                           reference=reference,
-                                                           tags=_tags))
+                idata = _sip_indicator(type=itype,
+                                   value=value,
+                                   reference=reference,
+                                   tags=_tags)
+                potential_indicators.append(idata)
+
+                if block['role'] == "InfURL":
+                    # this was a phishing url
+                    idata['type'] = 'Email - Content - Domain Name'
+                    idata['tags'].append('domain_in_url')
+                    potential_indicators.append(idata)
+
                 # uri path
                 value = block['data_1']['path']
                 if value:
