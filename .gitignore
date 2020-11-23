@@ -1,0 +1,7 @@
+etc/config.ini
+etc/cofense_config.ini
+archive/
+incoming/
+logs/
+var/
+venv/
