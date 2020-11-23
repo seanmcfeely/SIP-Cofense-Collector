@@ -1,0 +1,20 @@
+[sip_mappings]
+; Cofense blockType=SIP indicatorType
+URL=URI - URL
+IPv4 Address=Address - ipv4-addr
+Domain Name=URI - Domain Name
+Email=Email - Address
+md5Hex=Hash - MD5
+sha256Hex=Hash - SHA256
+fileName=Windows - FileName
+
+[sip]
+server=
+port=443
+user=cofense
+api_key=
+ignore_proxy=true
+verify_ssl==
+
+[collect]
+max_indicators_per_day=1000
