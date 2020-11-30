@@ -14,8 +14,8 @@ import configparser
 import pysip
 import traceback
 
+from tabulate import tabulate
 from pysip import ConflictError
-
 from datetime import datetime, timedelta
 
 # configure logging #
@@ -69,9 +69,12 @@ def write_error_report(message):
 # a list of reports needing deletion
 PROCESSED_REPORTS = {}
 
-def report_iterator():
+def report_iterator(target_report_dir=None):
     report_dirs = glob.glob(f"{os.path.join(INCOMING_DIR)}/*")
     report_dirs = sorted(report_dirs, reverse=True)
+    if target_report_dir:
+        report_dirs = [target_report_dir]
+        logging.debug(f"{report_dirs}")
     for report_dir in report_dirs:
         for report_file in glob.glob(f"{os.path.join(INCOMING_DIR, report_dir)}/*"):
             logging.info(f"loading {report_file}")
@@ -98,6 +101,12 @@ def create_sip_indicator(sip: pysip.pysip.Client, data: dict):
     if not data['value']:
         logging.error(f"proposed indicator value is empty.")
         return False
+
+    if '<redacted>' in data['value']:
+        old_value = data['value']
+        data['value'] = data['value'].replace('<redacted>', '')
+        logging.warning(f"appears to be scrubbed indicator value; changing from \"{old_value}\" to \"{data['value']}\"")
+
     try:
         result = sip.post('/api/indicators', data)
         if 'id' in result:
@@ -123,6 +132,8 @@ def main():
         help="Path to logging configuration file.  Defaults to etc/logging.ini")
     parser.add_argument('-c', '--config', required=False, default='etc/config.ini', dest='config_path',
         help="Path to configuration file.  Defaults to etc/config.ini")
+    parser.add_argument('-p', '--print-indicator-summary', action='store_true', help="Print a summary of all indicators incoming.")
+    parser.add_argument('-rd', '--target-report-dir', action='store', default=None, help="only evaluate this report directory")
 
     args = parser.parse_args()
 
@@ -146,6 +157,8 @@ def main():
     config.read(args.config_path)
 
     sip_map = config['sip_mappings']
+    # for turning indicator creation on/off by type
+    indicator_filter = config['indicator_filter']
 
     # variables 
     #  - keep a throttle on indicators created per day
@@ -197,7 +210,8 @@ def main():
 
     resume_report_id = None
     processed_reports = []
-    for report in report_iterator():
+    total_incoming_indicators = []
+    for report in report_iterator(target_report_dir=args.target_report_dir):
         global_tags = []
         for threat in report['malwareFamilySet']:
             if threat['familyName'] == 'Credential Phishing':
@@ -227,58 +241,69 @@ def main():
             else:
                 _tags.append(block['role'])
 
-            idata = _sip_indicator(type=sip_map[block['blockType']],
+            itype = sip_map[block['blockType']]
+            idata = _sip_indicator(type=itype,
                                    value=block['data'],
                                    reference=reference,
                                    tags=_tags)
-            potential_indicators.append(idata)
+
+            if indicator_filter.getboolean(itype):
+                potential_indicators.append(idata)
 
             # create more indicators
-            if block['blockType'] == "URL": 
-                # ipv4 or domain name
-                value = block['data_1']['host']
-                itype = 'URI - Domain Name'
+            if block['blockType'] == "URL":
 
+                if block['role'] == "InfURL":
+                    # this was a phishing url
+                    itype = 'Email - Content - Domain Name'
+                    value = block['data_1']['host']
+                    idata = _sip_indicator(type=itype,
+                                   value=value,
+                                   reference=reference,
+                                   tags=_tags)
+                    idata['tags'].append('domain_in_url')
+                    if indicator_filter.getboolean(itype):
+                        potential_indicators.append(idata)
+
+                # uri path?
+                value = block['data_1']['path']
+                if value and len(value) > 9:
+                    idata = _sip_indicator(type='URI - Path',
+                                           value=value,
+                                           reference=reference,
+                                           tags=_tags)
+                    if indicator_filter.getboolean('URI - Path'):
+                        potential_indicators.append(idata)
+
+                # default assume domain name
+                itype = 'URI - Domain Name'
+                value = block['data_1']['host']
                 if is_ipv4(block['data_1']['host']):
-                    # ipv4 indicator
                     itype = "Address - ipv4-addr"
 
                 idata = _sip_indicator(type=itype,
                                    value=value,
                                    reference=reference,
                                    tags=_tags)
-                potential_indicators.append(idata)
-
-                if block['role'] == "InfURL":
-                    # this was a phishing url
-                    idata['type'] = 'Email - Content - Domain Name'
-                    idata['tags'].append('domain_in_url')
+                if indicator_filter.getboolean(itype):
                     potential_indicators.append(idata)
-
-                # uri path
-                value = block['data_1']['path']
-                if value:
-                    potential_indicators.append(_sip_indicator(type='URI - Path', 
-                                                           value=value,
-                                                           reference=reference,
-                                                           tags=_tags))
 
         # process executableSet
         for malfile in report['executableSet']:
             fileName = malfile.get('fileName')
-            if fileName:
+            if fileName and indicator_filter.getboolean(sip_map['fileName']):
                 potential_indicators.append(_sip_indicator(type=sip_map['fileName'], 
                                                        value=fileName,
                                                        reference=reference,
                                                        tags=global_tags))
             sha256Hex = malfile.get('sha256Hex')
-            if sha256Hex:
+            if sha256Hex and indicator_filter.getboolean(sip_map['fileName']):
                 potential_indicators.append(_sip_indicator(type=sip_map['sha256Hex'], 
                                                        value=sha256Hex,
                                                        reference=reference,
                                                        tags=global_tags))
             md5Hex = malfile.get('md5Hex')
-            if md5Hex:
+            if md5Hex and indicator_filter.getboolean(sip_map['fileName']):
                 potential_indicators.append(_sip_indicator(type=sip_map['md5Hex'], 
                                                        value=md5Hex,
                                                        reference=reference,
@@ -287,24 +312,39 @@ def main():
         # process subjectSet
         for subjectSet in report['subjectSet']:
             subject = subjectSet.get('subject')
-            if subject:
+            if subject and indicator_filter.getboolean(sip_map['fileName']):
                 potential_indicators.append(_sip_indicator(type='Email - Subject', 
                                                        value=subject,
                                                        reference=reference,
                                                        tags=global_tags))
+
+        if args.print_indicator_summary:
+            total_incoming_indicators.extend(potential_indicators)
+            continue
 
         for indicator in potential_indicators:
             if indicators_created_today >= max_indicators_per_day:
                 resume_report_id = report['id']
                 logging.warning(f"maximum indicators created for the day. Will resume report {resume_report_id} tomorrow.")
                 break
-
             if create_sip_indicator(sip, indicator):
                 indicators_created_today += 1
 
         if resume_report_id is not None:
             break
 
+    if args.print_indicator_summary:
+        summary_data = []
+        for i in total_incoming_indicators:
+            summary_data.append({'Report ID': json.loads(i['references'][0]['reference'])['id'],
+                                 'type': i['type'],
+                                 'value': i['value']})
+            #print(f" + type:{i['type']}\t\t\tvalue:{i['value']}")
+        print(tabulate(summary_data, headers="keys"))#, tablefmt="github"))
+        print(f"\nTotal Incoming Indicators: {len(total_incoming_indicators)}")
+        return
+
+    # update records
     try:
         with open(indicator_creation_count_file, 'w') as fp:
             fp.write(str(indicators_created_today))

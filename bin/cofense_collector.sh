@@ -6,8 +6,11 @@ HOME="/opt/cofenseCollector"
 
 cd $HOME || { echo "$HOME does not exist. exiting."; exit 1;}
 
+# activate venv
+source venv/bin/activate
+
 # get any new reports
-venv/bin/python3 -m phishme_intelligence -conf etc/cofense_config.ini
+python3 -m phishme_intelligence -conf etc/cofense_config.ini
 
 # process any reports
 python3 cofense_collector.py

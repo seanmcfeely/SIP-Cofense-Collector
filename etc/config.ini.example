@@ -18,3 +18,15 @@ verify_ssl==
 
 [collect]
 max_indicators_per_day=1000
+
+[indicator_filter]
+Email - Address=yes
+Address - ipv4-addr=no
+URI - Domain Name=yes
+Email - Subject=yes
+Email - Content - Domain Name=yes
+URI - Path=yes
+URI - URL=yes
+Hash - MD5=yes
+Hash - SHA256=yes
+Windows - FileName=yes
