@@ -92,6 +92,14 @@ def is_ipv4(value):
     return CIDR_REGEX.match(value) is not None
 
 def get_html_report(report_url):
+    from phishme_intelligence import RestApi
+    config = configparser.ConfigParser()
+    config.read('etc/cofense_config.ini')
+    auth = (config['pm_api']['user'], config['pm_api']['pass'])
+    cofenseApi = RestApi(config=config, product='pm_api')
+    response = cofenseApi.connect_to_api('GET', report_url, auth=auth)
+    print(response[1])
+
     # TODO? for providing to analyst when they click
     return
 
@@ -121,7 +129,8 @@ def create_sip_indicator(sip: pysip.pysip.Client, data: dict):
         with open(save_path, 'w') as fp:
             json.dump(data, fp)
         logging.error(f"unidentified problem creating SIP indicator. saved indicator to {save_path}: {e}")
-        raise e
+        write_error_report(f"unidentified problem creating SIP indicator. saved indicator to {save_path}: {e}")
+
     return False
 
 def main():
@@ -134,6 +143,7 @@ def main():
         help="Path to configuration file.  Defaults to etc/config.ini")
     parser.add_argument('-p', '--print-indicator-summary', action='store_true', help="Print a summary of all indicators incoming.")
     parser.add_argument('-rd', '--target-report-dir', action='store', default=None, help="only evaluate this report directory")
+    parser.add_argument('-grh', '--get-report-html', action='store_true', help="get report html")
 
     args = parser.parse_args()
 
@@ -212,6 +222,11 @@ def main():
     processed_reports = []
     total_incoming_indicators = []
     for report in report_iterator(target_report_dir=args.target_report_dir):
+
+        if args.get_report_html:
+            get_html_report(report['reportURL'])
+            return True
+
         global_tags = []
         for threat in report['malwareFamilySet']:
             if threat['familyName'] == 'Credential Phishing':
@@ -227,6 +242,12 @@ def main():
         reference = {'id': report['id'],
                      'reportURL': report['reportURL'], # TODO
                      'executiveSummary': report['executiveSummary']}
+
+        ref_length = len(json.dumps(reference))
+        if ref_length > 512:
+            # Max length of SIP reference field is 512.
+            cut_length = len(reference['executiveSummary']) - (ref_length - 512)
+            reference['executiveSummary'] = reference['executiveSummary'][:cut_length]
 
         # report indicators to post to SIP
         potential_indicators = []
@@ -371,7 +392,13 @@ def main():
             logging.error(f"couldn't archive report: {e}")
         logging.info(f"archived {report_path} to {archive_path}")
 
-    # TODO delete empty dirs
+    # delete empty dirs
+    for report_dir in glob.glob(f"{os.path.join(INCOMING_DIR)}/*"):
+        if os.path.isdir(report_dir):
+            files = os.listdir(report_dir)
+            if len(files) == 0:
+                os.rmdir(report_dir)
+                logging.info(f"deleted empty report dir: {report_dir}")
 
 if __name__ == '__main__':
     try:
